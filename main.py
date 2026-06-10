@@ -33,7 +33,7 @@ def root():
     return {
         "status": "success",
         "message": "API FP-Growth aktif",
-        "docs": "http://127.0.0.1:8000/docs"
+        "docs": "/docs"
     }
 
 
