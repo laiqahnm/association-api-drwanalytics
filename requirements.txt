@@ -1,12 +1,12 @@
-fastapi==0.136.3
-uvicorn==0.49.0
-python-multipart==0.0.32
-pandas==3.0.3
-numpy==2.4.6
-mlxtend==0.25.0
+fastapi==0.136.3 
+uvicorn==0.49.0 #menjalankan aplikasi FastAPI
+python-multipart==0.0.32 #untuk file upload pada fastAPI
+pandas==3.0.3 #membaca, membersihkan, dan menyiapkan data transaksi
+numpy==2.4.6 #untuk operasi numerik dan pengolahan array di data preparation
+mlxtend==0.25.0 #menghasilkan algoritma FP-Growth dan pembentukan association rules
 openpyxl==3.1.5
-scikit-learn==1.9.0
+scikit-learn==1.9.0 #tahap evaluasi untuk membagi dataset training testing
 matplotlib==3.10.9
 scipy==1.17.1
-xlrd==2.0.2
+xlrd==2.0.2 #membaca file excel
 

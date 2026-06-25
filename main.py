@@ -66,9 +66,7 @@ async def analyze_fpgrowth(
                 "message": f"File {original_filename} bukan file Excel. Gunakan file .xls atau .xlsx."
             }
 
-        # ==========================
-        # SIMPAN FILE UPLOAD
-        # ==========================
+        # save file upload
         unique_filename = f"{uuid.uuid4().hex}_{original_filename}"
         file_path = os.path.join(UPLOAD_DIR, unique_filename)
 
@@ -77,9 +75,7 @@ async def analyze_fpgrowth(
         with open(file_path, "wb") as f:
             f.write(contents)
 
-        # ==========================
-        # JALANKAN FP-GROWTH
-        # ==========================
+        # menjalankan proses FP GROWTH
         result = run_fpgrowth_analysis(
             file_paths=file_path,
             min_support=min_support,

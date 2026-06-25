@@ -10,10 +10,7 @@ import pandas as pd
 from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import fpgrowth, association_rules
 
-
-# =========================================================
 # KONFIGURASI
-# =========================================================
 
 OPERATOR_DIHAPUS = ["devi", "dina", "owner"]
 
@@ -69,10 +66,8 @@ DEFAULT_MIN_SUPPORT = 0.01
 DEFAULT_MIN_CONFIDENCE = 0.4
 DEFAULT_MIN_LIFT = 1.0
 
-
-# =========================================================
 # HELPER
-# =========================================================
+# membaca file excel, membersihkan data, menyiapkan dataset untuk FP-Growth, menjalankan FP-Growth, dan membangun association rules
 
 def _ensure_list(file_paths: Union[str, List[str]]) -> List[str]:
     if isinstance(file_paths, list):
@@ -385,11 +380,8 @@ def _df_to_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
 
     return clean_records
 
-
-# =========================================================
 # KATEGORI RULE + DETEKSI ANOMALI
-# Mengikuti model.py
-# =========================================================
+# Mengikuti model.py yang udah dibuat
 
 def categorize_rule(row: pd.Series) -> str:
     confidence = float(row["confidence"])
@@ -500,10 +492,7 @@ def build_rules_export(rules_df: pd.DataFrame) -> pd.DataFrame:
 
     return rules_export
 
-
-# =========================================================
 # PREPROCESSING DATA MENTAH
-# =========================================================
 
 def preprocess_raw_dataframe(df_raw: pd.DataFrame):
     total_data_awal = int(df_raw.shape[0])
@@ -628,10 +617,7 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
 
     return df, summary_preprocessing
 
-
-# =========================================================
 # DATA PREPARATION UNTUK FP-GROWTH
-# =========================================================
 
 def prepare_transaction_dataset(
     df_clean: pd.DataFrame,
