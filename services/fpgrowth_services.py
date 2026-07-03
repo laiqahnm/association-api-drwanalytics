@@ -14,6 +14,8 @@ from mlxtend.frequent_patterns import fpgrowth, association_rules
 
 OPERATOR_DIHAPUS = ["devi", "dina", "owner"]
 
+TIPE_PENJUALAN_DIHAPUS = ["manual", "agen", "member", "reseller"]
+
 KATA_NON_PRODUK = [
     "kardus",
     "lakban",
@@ -41,6 +43,11 @@ COLUMN_ALIASES = {
     "waktu": "waktu",
     "operator": "operator",
 
+    "tipe penjualan": "tipe_penjualan",
+    "tipe_penjualan": "tipe_penjualan",
+    "type penjualan": "tipe_penjualan",
+    "jenis penjualan": "tipe_penjualan",
+
     "detail produk": "detail_produk",
     "detail_produk": "detail_produk",
     "detail product": "detail_produk",
@@ -62,8 +69,8 @@ REQUIRED_COLUMNS = [
 ]
 
 # Parameter default disamakan dengan model.py
-DEFAULT_MIN_SUPPORT = 0.01
-DEFAULT_MIN_CONFIDENCE = 0.4
+DEFAULT_MIN_SUPPORT = 0.02
+DEFAULT_MIN_CONFIDENCE = 0.6
 DEFAULT_MIN_LIFT = 1.0
 
 # HELPER
@@ -276,6 +283,11 @@ def _parse_time_value(value):
 
 
 def _kategori_waktu(jam):
+    """
+    Pembagian waktu terbaru:
+    - Pagi  = 00.00 sampai 11.59
+    - Siang = 12.00 sampai 23.59
+    """
     if _is_missing_value(jam):
         return pd.NA
 
@@ -283,10 +295,27 @@ def _kategori_waktu(jam):
 
     if 0 <= jam < 12:
         return "Pagi"
-    elif 12 <= jam < 18:
+
+    if 12 <= jam <= 23:
         return "Siang"
+
+    return pd.NA
+
+
+def _kategori_kanal_penjualan(tipe_penjualan):
+    tipe_penjualan = _safe_text(tipe_penjualan)
+
+    if tipe_penjualan is None:
+        return pd.NA
+
+    tipe_penjualan = tipe_penjualan.lower().strip()
+
+    if tipe_penjualan == "contactless dining":
+        return "offline"
+    elif tipe_penjualan in ["shopee", "online order"]:
+        return "online"
     else:
-        return "Malam"
+        return pd.NA
 
 
 def _make_token(prefix: str, value):
@@ -444,13 +473,22 @@ def build_rules_export(rules_df: pd.DataFrame) -> pd.DataFrame:
     if rules_df.empty:
         return pd.DataFrame(
             columns=[
+                "kanal_filter",
                 "antecedents_raw",
                 "consequents_raw",
                 "antecedents_display",
                 "consequents_display",
+                "antecedent support",
+                "consequent support",
                 "support",
                 "confidence",
                 "lift",
+                "leverage",
+                "conviction",
+                "zhangs_metric",
+                "jaccard",
+                "certainty",
+                "kulczynski",
                 "kategori_rule",
                 "is_anomaly",
             ]
@@ -465,6 +503,7 @@ def build_rules_export(rules_df: pd.DataFrame) -> pd.DataFrame:
     rules_export["consequents_display"] = rules_export["consequents"].apply(_itemset_to_display)
 
     selected_rule_columns = [
+        "kanal_filter",
         "antecedents_raw",
         "consequents_raw",
         "antecedents_display",
@@ -513,6 +552,7 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
         "tanggal",
         "waktu",
         "operator",
+        "tipe_penjualan",
         "detail_produk",
         "penjualan_bersih",
         "source_file",
@@ -529,6 +569,9 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
 
     if "operator" not in df.columns:
         df["operator"] = pd.NA
+
+    if "tipe_penjualan" not in df.columns:
+        df["tipe_penjualan"] = pd.NA
 
     if "source_file" not in df.columns:
         df["source_file"] = pd.NA
@@ -557,6 +600,14 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
         .str.lower()
     )
 
+    df["tipe_penjualan"] = (
+        df["tipe_penjualan"]
+        .astype("string")
+        .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
+        .str.lower()
+    )
+
     df["penjualan_bersih"] = df["penjualan_bersih"].apply(_clean_number)
 
     df = df.dropna(subset=["no_transaksi", "detail_produk", "penjualan_bersih"])
@@ -567,6 +618,11 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
         & (~df["no_transaksi"].astype(str).str.lower().isin(["nan", "none", "null", "<na>"]))
         & (~df["detail_produk"].astype(str).str.lower().isin(["nan", "none", "null", "<na>"]))
     ]
+
+    df = df[~df["tipe_penjualan"].isin(TIPE_PENJUALAN_DIHAPUS)]
+
+    df["kanal_penjualan"] = df["tipe_penjualan"].apply(_kategori_kanal_penjualan)
+    df = df[df["kanal_penjualan"].notna()]
 
     df = df[~df["operator"].isin(OPERATOR_DIHAPUS)]
 
@@ -595,9 +651,12 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
     df["kategori_waktu"] = df["jam"].apply(_kategori_waktu)
     df = df.drop(columns=["jam"])
 
+    df = df[df["kategori_waktu"].notna()]
+
     df = df[df["penjualan_bersih"] > 0]
 
     df["operator"] = df["operator"].astype("string").str.strip().str.title()
+    df["kanal_penjualan"] = df["kanal_penjualan"].astype("string").str.strip().str.lower()
 
     duplicate_subset = [col for col in df.columns if col != "source_file"]
     jumlah_duplikat = int(df.duplicated(subset=duplicate_subset).sum())
@@ -613,6 +672,9 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
         "jumlah_transaksi_unik": int(df["no_transaksi"].nunique()),
         "jumlah_produk_unik": int(df["detail_produk"].nunique()),
         "jumlah_operator_unik": int(df["operator"].nunique()),
+        "jumlah_kanal_penjualan_unik": int(df["kanal_penjualan"].nunique()),
+        "jumlah_transaksi_offline": int(df[df["kanal_penjualan"] == "offline"]["no_transaksi"].nunique()),
+        "jumlah_transaksi_online": int(df[df["kanal_penjualan"] == "online"]["no_transaksi"].nunique()),
     }
 
     return df, summary_preprocessing
@@ -621,10 +683,22 @@ def preprocess_raw_dataframe(df_raw: pd.DataFrame):
 
 def prepare_transaction_dataset(
     df_clean: pd.DataFrame,
+    kanal_filter: str = "semua",
     include_operator: bool = True,
     include_waktu: bool = True,
 ):
     df = df_clean.copy()
+
+    kanal_filter = str(kanal_filter).strip().lower()
+
+    if kanal_filter not in ["semua", "offline", "online"]:
+        kanal_filter = "semua"
+
+    if kanal_filter != "semua":
+        df = df[df["kanal_penjualan"] == kanal_filter]
+
+    if df.empty:
+        raise ValueError(f"Tidak ada data untuk kanal penjualan: {kanal_filter}")
 
     df = df.dropna(subset=["no_transaksi", "detail_produk"])
 
@@ -687,55 +761,124 @@ def prepare_transaction_dataset(
 
     df_fp = pd.DataFrame(te_data, columns=[str(col) for col in te.columns_])
 
-    return basket, df_fp
+    summary_kanal = {
+        "kanal_filter": kanal_filter,
+        "jumlah_data_setelah_filter_kanal": int(df.shape[0]),
+        "jumlah_transaksi_setelah_filter_kanal": int(df["no_transaksi"].nunique()),
+    }
+
+    return basket, df_fp, df, summary_kanal
 
 
 # =========================================================
 # FP-GROWTH + ASSOCIATION RULES
 # =========================================================
 
-def run_fpgrowth_analysis(
-    file_paths: Union[str, List[str]],
-    min_support: float = DEFAULT_MIN_SUPPORT,
-    min_confidence: float = DEFAULT_MIN_CONFIDENCE,
-    min_lift: float = DEFAULT_MIN_LIFT,
-    include_operator: bool = True,
-    include_waktu: bool = True,
-    only_product_rules: bool = False,
-    top_n: int = 20,
-    output_dir: str = "output/api_result",
-    save_output: bool = True,
-    save_intermediate: bool = False,
-) -> Dict[str, Any]:
 
-    if not (0 < min_support <= 1):
-        raise ValueError("min_support harus lebih dari 0 dan maksimal 1.")
-
-    if not (0 < min_confidence <= 1):
-        raise ValueError("min_confidence harus lebih dari 0 dan maksimal 1.")
-
-    if min_lift < 0:
-        raise ValueError("min_lift tidak boleh kurang dari 0.")
-
-    if top_n <= 0:
-        top_n = 20
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    run_id = uuid.uuid4().hex[:8]
-
-    df_raw = _read_excel_files(file_paths)
-
-    df_clean, summary_preprocessing = preprocess_raw_dataframe(df_raw)
-
-    if df_clean.empty:
-        raise ValueError("Dataset kosong setelah preprocessing.")
-
-    basket, df_fp = prepare_transaction_dataset(
-        df_clean,
-        include_operator=include_operator,
-        include_waktu=include_waktu,
+def _empty_channel_result(
+    kanal_filter: str,
+    summary_preprocessing: Dict[str, Any],
+    message: str,
+    min_support: float,
+    min_confidence: float,
+    min_lift: float,
+):
+    empty_frequent = pd.DataFrame(
+        columns=["kanal_filter", "itemsets_raw", "itemsets_display", "support", "item_count"]
     )
+
+    empty_rules = pd.DataFrame(
+        columns=[
+            "kanal_filter",
+            "antecedents_raw",
+            "consequents_raw",
+            "antecedents_display",
+            "consequents_display",
+            "support",
+            "confidence",
+            "lift",
+            "kategori_rule",
+            "is_anomaly",
+        ]
+    )
+
+    empty_produk = pd.DataFrame(columns=["kanal_filter", "nama_produk", "jumlah_terjual"])
+    empty_waktu = pd.DataFrame(columns=["kanal_filter", "kategori_waktu", "persentase"])
+    empty_kanal = pd.DataFrame(columns=["kanal_filter", "kanal_penjualan", "persentase"])
+    empty_operator_waktu = pd.DataFrame(columns=["kanal_filter", "operator", "kategori_waktu", "jumlah", "persentase"])
+    empty_distribusi_rule = pd.DataFrame(columns=["kanal_filter", "kategori_rule", "jumlah"])
+
+    summary = {
+        **summary_preprocessing,
+        "kanal_filter": kanal_filter,
+        "jumlah_data_setelah_filter_kanal": 0,
+        "jumlah_transaksi_setelah_filter_kanal": 0,
+        "total_basket": 0,
+        "produk_unik": 0,
+        "operator_unik": 0,
+        # Pola sering muncul = frequent itemsets.
+        "frequent_itemsets": 0,
+        "pola_sering_muncul": 0,
+        "total_pola_sering_muncul": 0,
+
+        # Pola hubungan = association rules yang lolos filter min_confidence dan min_lift.
+        "association_rules_total": 0,
+        "association_rules": 0,
+        "pola_hubungan_total": 0,
+        "pola_hubungan": 0,
+        "jumlah_anomali": 0,
+        "rule_terbaik": None,
+        "min_support": float(min_support),
+        "min_confidence": float(min_confidence),
+        "min_lift": float(min_lift),
+        "message": message,
+    }
+
+    return {
+        "kanal_filter": kanal_filter,
+        "summary": summary,
+        "basket": pd.DataFrame(columns=["no_transaksi", "itemset", "jumlah_item"]),
+        "df_fp": pd.DataFrame(),
+        "df_analysis": pd.DataFrame(),
+        "frequent_export": empty_frequent,
+        "rules_all_export": empty_rules,
+        "rules_export": empty_rules,
+        "rules_anomaly_export": empty_rules,
+        "produk_rekap": empty_produk,
+        "waktu_dist": empty_waktu,
+        "kanal_dist": empty_kanal,
+        "operator_waktu": empty_operator_waktu,
+        "distribusi_rule": empty_distribusi_rule,
+    }
+
+
+def _run_single_channel_analysis(
+    df_clean: pd.DataFrame,
+    summary_preprocessing: Dict[str, Any],
+    kanal_filter: str,
+    min_support: float,
+    min_confidence: float,
+    min_lift: float,
+    include_operator: bool,
+    include_waktu: bool,
+    only_product_rules: bool,
+):
+    try:
+        basket, df_fp, df_analysis, summary_kanal = prepare_transaction_dataset(
+            df_clean,
+            kanal_filter=kanal_filter,
+            include_operator=include_operator,
+            include_waktu=include_waktu,
+        )
+    except ValueError as e:
+        return _empty_channel_result(
+            kanal_filter=kanal_filter,
+            summary_preprocessing=summary_preprocessing,
+            message=str(e),
+            min_support=min_support,
+            min_confidence=min_confidence,
+            min_lift=min_lift,
+        )
 
     frequent_itemsets = fpgrowth(
         df_fp,
@@ -744,45 +887,52 @@ def run_fpgrowth_analysis(
     )
 
     if frequent_itemsets.empty:
-        return {
-            "status": "success",
-            "message": "Analisis selesai, tetapi tidak ada frequent itemset. Coba turunkan min_support.",
-            "summary": {
-                **summary_preprocessing,
-                "total_basket": int(basket.shape[0]),
-                "produk_unik": int(df_clean["detail_produk"].nunique()),
-                "operator_unik": int(df_clean["operator"].nunique()),
-                "frequent_itemsets": 0,
-                "association_rules_total": 0,
-                "association_rules": 0,
-                "jumlah_anomali": 0,
-                "rule_terbaik": None,
-                "min_support": float(min_support),
-                "min_confidence": float(min_confidence),
-                "min_lift": float(min_lift),
-            },
-            "top_frequent_itemsets": [],
-            "top_rules": [],
-            "anomaly_rules": [],
-            "rekap_produk": [],
-            "distribusi_waktu": [],
-            "distribusi_rule": [],
-            "output_files": {},
+        result = _empty_channel_result(
+            kanal_filter=kanal_filter,
+            summary_preprocessing=summary_preprocessing,
+            message="Tidak ada frequent itemset. Coba turunkan min_support.",
+            min_support=min_support,
+            min_confidence=min_confidence,
+            min_lift=min_lift,
+        )
+        result["basket"] = basket
+        result["df_fp"] = df_fp
+        result["df_analysis"] = df_analysis
+        result["summary"] = {
+            **summary_preprocessing,
+            **summary_kanal,
+            "total_basket": int(basket.shape[0]),
+            "produk_unik": int(df_analysis["detail_produk"].nunique()),
+            "operator_unik": int(df_analysis["operator"].nunique()),
+            "frequent_itemsets": 0,
+            "association_rules_total": 0,
+            "association_rules": 0,
+            "jumlah_anomali": 0,
+            "rule_terbaik": None,
+            "min_support": float(min_support),
+            "min_confidence": float(min_confidence),
+            "min_lift": float(min_lift),
+            "message": "Tidak ada frequent itemset. Coba turunkan min_support.",
         }
+        return result
 
     frequent_itemsets["item_count"] = frequent_itemsets["itemsets"].apply(len)
+    frequent_itemsets["kanal_filter"] = kanal_filter
+
     frequent_itemsets = frequent_itemsets.sort_values(
         by=["support", "item_count"],
         ascending=[False, False]
     ).reset_index(drop=True)
 
     rules = association_rules(
-        frequent_itemsets,
+        frequent_itemsets.drop(columns=["kanal_filter"]),
         metric="confidence",
         min_threshold=min_confidence
     )
 
     if not rules.empty:
+        rules["kanal_filter"] = kanal_filter
+
         # Deteksi kategori rule dan anomali dilakukan sebelum filter lift,
         # mengikuti alur model.py.
         rules = add_rule_category_and_anomaly(rules)
@@ -792,11 +942,8 @@ def run_fpgrowth_analysis(
             ascending=[False, False, False]
         ).reset_index(drop=True)
 
-    # Semua rules setelah minimum confidence
     rules_all = rules.copy()
 
-    # Rules filtered mengikuti model.py:
-    # lift harus lebih besar dari MIN_LIFT dan confidence minimal MIN_CONFIDENCE.
     if not rules.empty:
         rules_filtered = rules[
             (rules["lift"] > min_lift) &
@@ -824,6 +971,7 @@ def run_fpgrowth_analysis(
 
     frequent_export = frequent_export[
         [
+            "kanal_filter",
             "itemsets_raw",
             "itemsets_display",
             "support",
@@ -847,30 +995,61 @@ def run_fpgrowth_analysis(
 
     rule_terbaik = None
 
+    # Rule terbaik untuk tampilan ringkasan hanya boleh mengambil rule normal,
+    # bukan rule anomali/outlier, meskipun lift rule anomali lebih tinggi.
     if not rules_export.empty:
-        best_rule = rules_export.iloc[0]
-        rule_terbaik = (
-            f"{best_rule['antecedents_display']} → "
-            f"{best_rule['consequents_display']}"
-        )
+        normal_rules_export = rules_export[
+            rules_export["is_anomaly"].apply(lambda value: bool(value) is False)
+        ].copy()
+
+        if not normal_rules_export.empty:
+            best_rule = normal_rules_export.sort_values(
+                by=["lift", "confidence", "support"],
+                ascending=[False, False, False]
+            ).iloc[0]
+
+            rule_terbaik = (
+                f"{best_rule['antecedents_display']} → "
+                f"{best_rule['consequents_display']}"
+            )
 
     produk_rekap = (
-        df_clean["detail_produk"]
+        df_analysis["detail_produk"]
         .value_counts()
         .reset_index()
     )
     produk_rekap.columns = ["nama_produk", "jumlah_terjual"]
+    produk_rekap["kanal_filter"] = kanal_filter
+    produk_rekap = produk_rekap[
+        ["kanal_filter", "nama_produk", "jumlah_terjual"]
+    ]
 
     waktu_dist = (
-        df_clean["kategori_waktu"]
+        df_analysis["kategori_waktu"]
         .value_counts(normalize=True, dropna=True)
         .mul(100)
         .reset_index()
     )
     waktu_dist.columns = ["kategori_waktu", "persentase"]
+    waktu_dist["kanal_filter"] = kanal_filter
+    waktu_dist = waktu_dist[
+        ["kanal_filter", "kategori_waktu", "persentase"]
+    ]
+
+    kanal_dist = (
+        df_analysis["kanal_penjualan"]
+        .value_counts(normalize=True, dropna=True)
+        .mul(100)
+        .reset_index()
+    )
+    kanal_dist.columns = ["kanal_penjualan", "persentase"]
+    kanal_dist["kanal_filter"] = kanal_filter
+    kanal_dist = kanal_dist[
+        ["kanal_filter", "kanal_penjualan", "persentase"]
+    ]
 
     operator_waktu = (
-        df_clean
+        df_analysis
         .groupby(["operator", "kategori_waktu"])
         .size()
         .reset_index(name="jumlah")
@@ -881,15 +1060,321 @@ def run_fpgrowth_analysis(
             lambda x: x / x.sum() * 100
         )
 
+    operator_waktu["kanal_filter"] = kanal_filter
+    operator_waktu = operator_waktu[
+        ["kanal_filter", "operator", "kategori_waktu", "jumlah", "persentase"]
+    ]
+
     if not rules_all.empty and "kategori_rule" in rules_all.columns:
         distribusi_rule = (
-            rules_all["kategori_rule"]
-            .value_counts()
-            .reset_index()
+            rules_all
+            .groupby(["kanal_filter", "kategori_rule"])
+            .size()
+            .reset_index(name="jumlah")
         )
-        distribusi_rule.columns = ["kategori_rule", "jumlah"]
     else:
-        distribusi_rule = pd.DataFrame(columns=["kategori_rule", "jumlah"])
+        distribusi_rule = pd.DataFrame(columns=["kanal_filter", "kategori_rule", "jumlah"])
+
+    summary = {
+        **summary_preprocessing,
+        **summary_kanal,
+        "total_basket": int(basket.shape[0]),
+        "produk_unik": int(df_analysis["detail_produk"].nunique()),
+        "operator_unik": int(df_analysis["operator"].nunique()),
+        # Pola sering muncul = frequent itemsets.
+        "frequent_itemsets": int(frequent_export.shape[0]),
+        "pola_sering_muncul": int(frequent_export.shape[0]),
+        "total_pola_sering_muncul": int(frequent_export.shape[0]),
+
+        # Pola hubungan = association rules yang lolos filter min_confidence dan min_lift.
+        # association_rules_total tetap disimpan sebagai total rules sebelum filter min_lift.
+        "association_rules_total": int(rules_all_export.shape[0]),
+        "association_rules": int(rules_export.shape[0]),
+        "pola_hubungan_total": int(rules_all_export.shape[0]),
+        "pola_hubungan": int(rules_export.shape[0]),
+        "jumlah_anomali": int(rules_anomaly_export.shape[0]),
+        "rule_terbaik": rule_terbaik,
+        "min_support": float(min_support),
+        "min_confidence": float(min_confidence),
+        "min_lift": float(min_lift),
+    }
+
+    return {
+        "kanal_filter": kanal_filter,
+        "summary": summary,
+        "basket": basket,
+        "df_fp": df_fp,
+        "df_analysis": df_analysis,
+        "frequent_export": frequent_export,
+        "rules_all_export": rules_all_export,
+        "rules_export": rules_export,
+        "rules_anomaly_export": rules_anomaly_export,
+        "produk_rekap": produk_rekap,
+        "waktu_dist": waktu_dist,
+        "kanal_dist": kanal_dist,
+        "operator_waktu": operator_waktu,
+        "distribusi_rule": distribusi_rule,
+    }
+
+
+def _concat_dataframes(dataframes: List[pd.DataFrame], columns: List[str]) -> pd.DataFrame:
+    valid_dataframes = [
+        df for df in dataframes
+        if isinstance(df, pd.DataFrame) and not df.empty
+    ]
+
+    if len(valid_dataframes) == 0:
+        return pd.DataFrame(columns=columns)
+
+    return pd.concat(valid_dataframes, ignore_index=True)
+
+
+def run_fpgrowth_analysis(
+    file_paths: Union[str, List[str]],
+    min_support: float = DEFAULT_MIN_SUPPORT,
+    min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    min_lift: float = DEFAULT_MIN_LIFT,
+    kanal_filter: str = "semua",
+    include_operator: bool = True,
+    include_waktu: bool = True,
+    only_product_rules: bool = False,
+    top_n: int = 0,
+    output_dir: str = "output/api_result",
+    save_output: bool = True,
+    save_intermediate: bool = False,
+) -> Dict[str, Any]:
+
+    if not (0 < min_support <= 1):
+        raise ValueError("min_support harus lebih dari 0 dan maksimal 1.")
+
+    if not (0 < min_confidence <= 1):
+        raise ValueError("min_confidence harus lebih dari 0 dan maksimal 1.")
+
+    if min_lift < 0:
+        raise ValueError("min_lift tidak boleh kurang dari 0.")
+
+    # top_n <= 0 berarti tidak ada pembatasan jumlah data yang dikirim.
+    # Untuk kebutuhan aplikasi terbaru, semua association rules harus dikirim ke Laravel.
+    try:
+        top_n = int(top_n)
+    except (TypeError, ValueError):
+        top_n = 0
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    run_id = uuid.uuid4().hex[:8]
+
+    df_raw = _read_excel_files(file_paths)
+
+    df_clean, summary_preprocessing = preprocess_raw_dataframe(df_raw)
+
+    if df_clean.empty:
+        raise ValueError("Dataset kosong setelah preprocessing.")
+
+    daftar_kanal = ["offline", "online"]
+
+    channel_results = []
+
+    for kanal in daftar_kanal:
+        channel_result = _run_single_channel_analysis(
+            df_clean=df_clean,
+            summary_preprocessing=summary_preprocessing,
+            kanal_filter=kanal,
+            min_support=min_support,
+            min_confidence=min_confidence,
+            min_lift=min_lift,
+            include_operator=include_operator,
+            include_waktu=include_waktu,
+            only_product_rules=only_product_rules,
+        )
+
+        channel_results.append(channel_result)
+
+    frequent_export_all = _concat_dataframes(
+        [result["frequent_export"] for result in channel_results],
+        ["kanal_filter", "itemsets_raw", "itemsets_display", "support", "item_count"]
+    )
+
+    rules_all_export = _concat_dataframes(
+        [result["rules_all_export"] for result in channel_results],
+        [
+            "kanal_filter",
+            "antecedents_raw",
+            "consequents_raw",
+            "antecedents_display",
+            "consequents_display",
+            "support",
+            "confidence",
+            "lift",
+            "kategori_rule",
+            "is_anomaly",
+        ]
+    )
+
+    rules_export = _concat_dataframes(
+        [result["rules_export"] for result in channel_results],
+        [
+            "kanal_filter",
+            "antecedents_raw",
+            "consequents_raw",
+            "antecedents_display",
+            "consequents_display",
+            "support",
+            "confidence",
+            "lift",
+            "kategori_rule",
+            "is_anomaly",
+        ]
+    )
+
+    rules_anomaly_export = _concat_dataframes(
+        [result["rules_anomaly_export"] for result in channel_results],
+        [
+            "kanal_filter",
+            "antecedents_raw",
+            "consequents_raw",
+            "antecedents_display",
+            "consequents_display",
+            "support",
+            "confidence",
+            "lift",
+            "kategori_rule",
+            "is_anomaly",
+        ]
+    )
+
+    produk_rekap_all = _concat_dataframes(
+        [result["produk_rekap"] for result in channel_results],
+        ["kanal_filter", "nama_produk", "jumlah_terjual"]
+    )
+
+    waktu_dist_all = _concat_dataframes(
+        [result["waktu_dist"] for result in channel_results],
+        ["kanal_filter", "kategori_waktu", "persentase"]
+    )
+
+    kanal_dist_all = _concat_dataframes(
+        [result["kanal_dist"] for result in channel_results],
+        ["kanal_filter", "kanal_penjualan", "persentase"]
+    )
+
+    operator_waktu_all = _concat_dataframes(
+        [result["operator_waktu"] for result in channel_results],
+        ["kanal_filter", "operator", "kategori_waktu", "jumlah", "persentase"]
+    )
+
+    distribusi_rule_all = _concat_dataframes(
+        [result["distribusi_rule"] for result in channel_results],
+        ["kanal_filter", "kategori_rule", "jumlah"]
+    )
+
+    if not rules_export.empty:
+        rules_export = rules_export.sort_values(
+            by=["kanal_filter", "lift", "confidence", "support"],
+            ascending=[True, False, False, False]
+        ).reset_index(drop=True)
+
+    if not rules_all_export.empty:
+        rules_all_export = rules_all_export.sort_values(
+            by=["kanal_filter", "lift", "confidence", "support"],
+            ascending=[True, False, False, False]
+        ).reset_index(drop=True)
+
+    if not rules_anomaly_export.empty:
+        rules_anomaly_export = rules_anomaly_export.sort_values(
+            by=["kanal_filter", "lift", "confidence", "support"],
+            ascending=[True, True, True, False]
+        ).reset_index(drop=True)
+
+    # Untuk aplikasi Laravel, field top_rules tetap dipakai sebagai sumber utama data tabel.
+    # Karena itu jangan dipotong top_n. Kirim semua rules yang lolos filter support,
+    # confidence, lift, dan aturan only_product_rules.
+    if not rules_export.empty:
+        top_rules_all = rules_export.sort_values(
+            by=["kanal_filter", "lift", "confidence", "support"],
+            ascending=[True, False, False, False]
+        ).reset_index(drop=True)
+    else:
+        top_rules_all = pd.DataFrame(columns=rules_export.columns)
+
+    top_frequent_per_kanal = []
+
+    for kanal in daftar_kanal:
+        frequent_kanal = frequent_export_all[frequent_export_all["kanal_filter"] == kanal].copy()
+
+        if not frequent_kanal.empty:
+            frequent_kanal = frequent_kanal.sort_values(
+                by=["support", "item_count"],
+                ascending=[False, False]
+            )
+
+            if top_n > 0:
+                frequent_kanal = frequent_kanal.head(top_n)
+
+            top_frequent_per_kanal.append(frequent_kanal)
+
+    if len(top_frequent_per_kanal) > 0:
+        top_frequent_all = pd.concat(top_frequent_per_kanal, ignore_index=True)
+    else:
+        top_frequent_all = pd.DataFrame(columns=frequent_export_all.columns)
+
+    # Rules anomali juga tidak dipotong, supaya mode anomali di Laravel bisa melihat semuanya.
+    if not rules_anomaly_export.empty:
+        anomaly_rules_all = rules_anomaly_export.sort_values(
+            by=["kanal_filter", "lift", "confidence", "support"],
+            ascending=[True, True, True, False]
+        ).reset_index(drop=True)
+    else:
+        anomaly_rules_all = pd.DataFrame(columns=rules_anomaly_export.columns)
+
+    channel_summary = {
+        result["kanal_filter"]: result["summary"]
+        for result in channel_results
+    }
+
+    summary_offline = channel_summary.get("offline", {})
+    summary_online = channel_summary.get("online", {})
+
+    rule_terbaik = None
+
+    # Rule terbaik gabungan juga hanya boleh dari rule normal.
+    if not rules_export.empty:
+        normal_rules_export = rules_export[
+            rules_export["is_anomaly"].apply(lambda value: bool(value) is False)
+        ].copy()
+
+        if not normal_rules_export.empty:
+            best_rule = normal_rules_export.sort_values(
+                by=["lift", "confidence", "support"],
+                ascending=[False, False, False]
+            ).iloc[0]
+
+            rule_terbaik = (
+                f"{best_rule['antecedents_display']} → "
+                f"{best_rule['consequents_display']}"
+            )
+
+    total_basket_gabungan = (
+        int(summary_offline.get("total_basket", 0)) +
+        int(summary_online.get("total_basket", 0))
+    )
+
+    frequent_itemsets_gabungan = (
+        int(summary_offline.get("frequent_itemsets", 0)) +
+        int(summary_online.get("frequent_itemsets", 0))
+    )
+
+    association_rules_total_gabungan = (
+        int(summary_offline.get("association_rules_total", 0)) +
+        int(summary_online.get("association_rules_total", 0))
+    )
+
+    pola_hubungan_gabungan = int(rules_export.shape[0])
+
+    jumlah_anomali_gabungan = (
+        int(summary_offline.get("jumlah_anomali", 0)) +
+        int(summary_online.get("jumlah_anomali", 0))
+    )
 
     output_files = {}
 
@@ -901,18 +1386,20 @@ def run_fpgrowth_analysis(
         anomaly_path = os.path.join(output_dir, f"{run_id}_rules_anomali.xlsx")
         produk_rekap_path = os.path.join(output_dir, f"{run_id}_rekap_produk.xlsx")
         waktu_dist_path = os.path.join(output_dir, f"{run_id}_distribusi_waktu.xlsx")
+        kanal_dist_path = os.path.join(output_dir, f"{run_id}_distribusi_kanal.xlsx")
         operator_waktu_path = os.path.join(output_dir, f"{run_id}_operator_waktu.xlsx")
         distribusi_rule_path = os.path.join(output_dir, f"{run_id}_distribusi_rule.xlsx")
 
         df_clean.to_excel(clean_path, index=False)
-        frequent_export.to_excel(frequent_path, index=False)
+        frequent_export_all.to_excel(frequent_path, index=False)
         rules_all_export.to_excel(rules_all_path, index=False)
         rules_export.to_excel(rules_filtered_path, index=False)
         rules_anomaly_export.to_excel(anomaly_path, index=False)
-        produk_rekap.to_excel(produk_rekap_path, index=False)
-        waktu_dist.to_excel(waktu_dist_path, index=False)
-        operator_waktu.to_excel(operator_waktu_path, index=False)
-        distribusi_rule.to_excel(distribusi_rule_path, index=False)
+        produk_rekap_all.to_excel(produk_rekap_path, index=False)
+        waktu_dist_all.to_excel(waktu_dist_path, index=False)
+        kanal_dist_all.to_excel(kanal_dist_path, index=False)
+        operator_waktu_all.to_excel(operator_waktu_path, index=False)
+        distribusi_rule_all.to_excel(distribusi_rule_path, index=False)
 
         output_files = {
             "dataset_bersih": clean_path,
@@ -923,57 +1410,92 @@ def run_fpgrowth_analysis(
             "rules_anomali": anomaly_path,
             "rekap_produk": produk_rekap_path,
             "distribusi_waktu": waktu_dist_path,
+            "distribusi_kanal": kanal_dist_path,
             "operator_waktu": operator_waktu_path,
             "distribusi_rule": distribusi_rule_path,
         }
 
         if save_intermediate:
-            basket_path = os.path.join(output_dir, f"{run_id}_dataset_transaksi_itemset.xlsx")
-            fp_path = os.path.join(output_dir, f"{run_id}_dataset_fp_growth.xlsx")
+            for result in channel_results:
+                kanal = result["kanal_filter"]
 
-            basket_export = basket.copy()
-            basket_export["itemset"] = basket_export["itemset"].apply(_safe_join)
+                basket_path = os.path.join(output_dir, f"{run_id}_dataset_transaksi_itemset_{kanal}.xlsx")
+                fp_path = os.path.join(output_dir, f"{run_id}_dataset_fp_growth_{kanal}.xlsx")
 
-            basket_export.to_excel(basket_path, index=False)
-            df_fp.to_excel(fp_path, index=False)
+                basket_export = result["basket"].copy()
 
-            output_files["dataset_transaksi_itemset"] = basket_path
-            output_files["dataset_fp_growth"] = fp_path
+                if not basket_export.empty and "itemset" in basket_export.columns:
+                    basket_export["itemset"] = basket_export["itemset"].apply(_safe_join)
+
+                basket_export.to_excel(basket_path, index=False)
+                result["df_fp"].to_excel(fp_path, index=False)
+
+                output_files[f"dataset_transaksi_itemset_{kanal}"] = basket_path
+                output_files[f"dataset_fp_growth_{kanal}"] = fp_path
 
     result = {
         "status": "success",
-        "message": "Analisis FP-Growth berhasil diproses dari dataset mentah.",
+        "message": "Analisis FP-Growth berhasil diproses untuk kanal offline dan online.",
         "summary": {
             **summary_preprocessing,
-            "total_basket": int(basket.shape[0]),
+            "kanal_filter": "semua",
+            "kanal_filter_label": "Semua Kanal",
+            "keterangan_kanal": "Semua Kanal berarti gabungan rules offline dan online, bukan hasil mining kanal tersendiri.",
+            "total_basket": int(total_basket_gabungan),
             "produk_unik": int(df_clean["detail_produk"].nunique()),
             "operator_unik": int(df_clean["operator"].nunique()),
-            "frequent_itemsets": int(frequent_itemsets.shape[0]),
-            "association_rules_total": int(rules_all_export.shape[0]),
-            "association_rules": int(rules_export.shape[0]),
-            "jumlah_anomali": int(rules_anomaly_export.shape[0]),
+            # Pola sering muncul = frequent itemsets.
+            "frequent_itemsets": int(frequent_itemsets_gabungan),
+            "pola_sering_muncul": int(frequent_itemsets_gabungan),
+            "total_pola_sering_muncul": int(frequent_itemsets_gabungan),
+            "pola_sering_muncul_offline": int(summary_offline.get("frequent_itemsets", 0)),
+            "pola_sering_muncul_online": int(summary_online.get("frequent_itemsets", 0)),
+
+            # Pola hubungan = association rules yang lolos filter min_confidence dan min_lift.
+            "association_rules_total": int(association_rules_total_gabungan),
+            "association_rules": int(pola_hubungan_gabungan),
+            "pola_hubungan_total": int(association_rules_total_gabungan),
+            "pola_hubungan": int(pola_hubungan_gabungan),
+            "association_rules_offline": int(summary_offline.get("association_rules", 0)),
+            "association_rules_online": int(summary_online.get("association_rules", 0)),
+            "pola_hubungan_offline": int(summary_offline.get("association_rules", 0)),
+            "pola_hubungan_online": int(summary_online.get("association_rules", 0)),
+            "jumlah_anomali": int(jumlah_anomali_gabungan),
+            "jumlah_anomali_offline": int(summary_offline.get("jumlah_anomali", 0)),
+            "jumlah_anomali_online": int(summary_online.get("jumlah_anomali", 0)),
             "rule_terbaik": rule_terbaik,
             "min_support": float(min_support),
             "min_confidence": float(min_confidence),
             "min_lift": float(min_lift),
         },
+        "summary_per_kanal": channel_summary,
         "top_frequent_itemsets": _df_to_records(
-            frequent_export.head(top_n)
+            top_frequent_all
         ),
         "top_rules": _df_to_records(
-            rules_export.head(top_n)
+            top_rules_all
+        ),
+        # Alias tambahan supaya aman jika controller membaca key lain.
+        "rules": _df_to_records(
+            top_rules_all
+        ),
+        "association_rules_data": _df_to_records(
+            top_rules_all
         ),
         "anomaly_rules": _df_to_records(
-            rules_anomaly_export.head(top_n)
+            anomaly_rules_all
         ),
         "rekap_produk": _df_to_records(
-            produk_rekap.head(top_n)
+            produk_rekap_all
         ),
         "distribusi_waktu": _df_to_records(
-            waktu_dist
+            waktu_dist_all
+        ),
+        "distribusi_kanal": _df_to_records(
+            kanal_dist_all
         ),
         "distribusi_rule": _df_to_records(
-            distribusi_rule
+            distribusi_rule_all
         ),
         "output_files": output_files,
     }

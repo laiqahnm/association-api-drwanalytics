@@ -41,8 +41,8 @@ def root():
 async def analyze_fpgrowth(
     file: UploadFile = File(...),
     min_support: float = Form(0.01),
-    min_confidence: float = Form(0.5),
-    min_lift: float = Form(0.0),
+    min_confidence: float = Form(0.4),
+    min_lift: float = Form(1.0),
     include_operator: bool = Form(True),
     include_waktu: bool = Form(True),
     only_product_rules: bool = Form(False),
